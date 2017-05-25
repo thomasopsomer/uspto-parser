@@ -169,37 +169,6 @@ object SparkApp {
     zipPathRDD.coalesce(1).saveAsTextFile(params.outputPath + "/log_%s" format java.time.LocalDate.now.toString)
   }
 
-/*  def run2(params: Params): Unit = {
-    val conf = new SparkConf()
-      .setAppName("GrobidSpark")
-      .set("spark.driver.allowMultipleContexts", "true")
-
-    val sc = SparkContext.getOrCreate(conf)
-    sc.hadoopConfiguration.set("fs.s3a.connection.timeout", "500000")
-
-    // sqlContext and implicits for dataframe
-    val hc = new SQLContext(sc)
-    import hc.implicits._
-
-    var zipPathRDD: RDD[String] = sc.emptyRDD[String]
-    var patentParsedRDD: RDD[PatentDocument] = sc.emptyRDD[PatentDocument]
-
-    // Accumulator for errors
-    val acc: Accumulable[mutable.MutableList[String], String] =
-    sc.accumulableCollection(initialValue = mutable.MutableList())
-
-    val zipFilesPath: List[String] = Helper.getRecursiveListOfFilesInFolder(params.folderPath)
-      .filter(_.endsWith("zip"))
-    println(f"Found ${zipFilesPath.size} archives to process.")
-
-    val rdd: RDD[String] = sc.parallelize(zipFilesPath, 4).mapPartitions(
-      x => parsePartStr(x))
-
-    // rdd.saveAsTextFile("/tmp/xmlStr.txt")
-
-    println(rdd.count())
-  }*/
-
   def main(args: Array[String]): Unit = {
 
     // Argument parser

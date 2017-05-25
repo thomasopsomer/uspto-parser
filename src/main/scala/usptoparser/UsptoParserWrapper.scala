@@ -93,12 +93,6 @@ class UsptoParserWrapper(inputFile: File) extends Serializable {
     }
     containerIt
   }
-
-
-  def dumpReaderIterator: Iterator[String] = {
-    Iterator.continually(dumpReader.next).takeWhile(_ => dumpReader.hasNext)
-  }
-
 }
 
 
