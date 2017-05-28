@@ -8,6 +8,8 @@ import scala.collection.JavaConversions._
 import com.amazonaws.services.s3.AmazonS3Client
 import com.amazonaws.services.s3.model.ObjectListing
 import java.io.File
+import java.text.SimpleDateFormat
+import java.util.Date
 import scala.collection.mutable
 
 
@@ -38,12 +40,6 @@ object Helper {
     path.startsWith("s3://") || path.startsWith("s3a://")
   }
 
-  def getYearFromKey(key:String): Integer = {
-    // ipg170103.zip
-    val pattern = "^[a-z-A-Z]{2,6}([0-9]{6,8}).zip".r
-    0
-  }
-
   def getListOfSubDirectories(dir: File): List[String] = {
     val n0 = dir.listFiles
       .filter(_.isDirectory)
@@ -68,6 +64,19 @@ object Helper {
       }
     }
     files ++ subfiles
+  }
+
+  def getDateFromFilename(fname: String): Date = {
+    val pattern = "^[A-z]{2,}([0-9]{6,8})[A-z-0-9]*.zip".r
+    val pattern(rawDate) = fname.split("/").last
+    strToDate(rawDate)
+  }
+
+  def strToDate(dateStr: String): Date = {
+    dateStr.length match {
+      case 6 => new SimpleDateFormat("yyMMdd").parse(dateStr)
+      case 8 => new SimpleDateFormat("yyyyMMdd").parse(dateStr)
+    }
   }
 
 }

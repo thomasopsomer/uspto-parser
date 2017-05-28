@@ -330,6 +330,7 @@ class UsptoParserWrapper(file: File, delete: Boolean = false) extends Iterator[O
   def hasNext = {
     val hasNext = dumpReader.hasNext
     if (!hasNext) {
+      logger.debug(f"Done processing file ${file.getName}")
       // close the file
       close()
       // remove the file if asked

@@ -5,15 +5,16 @@ package usptoparser
   */
 
 
-import java.io.{File, StringReader}
+import java.io.File
+import java.util.Date
 
-import org.apache.spark.{Accumulable, SparkConf, SparkContext}
+import org.apache.spark.{SparkConf, SparkContext}
 import org.apache.spark.sql.{SQLContext, SaveMode}
 import com.amazonaws.services.s3.AmazonS3Client
 import com.amazonaws.regions.{Region, Regions}
 import com.amazonaws.services.s3.model.GetObjectRequest
 import org.apache.spark.rdd.RDD
-import scala.collection.mutable
+
 import scala.util.Try
 import scopt.OptionParser
 import org.apache.log4j.LogManager
@@ -25,7 +26,9 @@ object SparkApp {
                      folderPath: String = null,
                      outputPath: String = null,
                      numPartitions: Option[Int] = None,
-                     test: Boolean = false
+                     test: Boolean = false,
+                     from: Date = null,
+                     to: Date = null
                    )
 
   @transient lazy val logger = LogManager.getLogger("SparkUsptoParser")
@@ -66,6 +69,84 @@ object SparkApp {
     })
   }
 
+  def runS3(sc: SparkContext, params: Params): (RDD[PatentDocument], RDD[String]) = {
+    // for aws manipulation replace s3a by s3
+    val folderPath = params.folderPath.replaceAll("s3a://", "s3://")
+
+    // get list of file to process from the s3folder and make it an RDD
+    val s3: AmazonS3Client = new AmazonS3Client()
+    val region_name = sys.env.getOrElse("AWS_DEFAULT_REGION", "EU_WEST_1")
+    val region = Region.getRegion(Regions.valueOf(region_name))
+    s3.setRegion(region)
+
+    // look for logs not to parse already parsed archive
+    val archive_logs: Array[String] = Try({
+      sc.textFile(params.outputPath + "/log*/*")
+        .map(Helper.splitBucketKey).map(_._2).collect()
+    }).getOrElse(Array.empty[String])
+    logger.info(f"Found logs for ${archive_logs.size} parsed files")
+
+    // get list of s3 keys, and filter them
+    var bucketKeysList: List[(String, String)] = Helper.listS3FolderKeys(s3, folderPath)
+      .filter(x => x._2.endsWith("zip"))
+      .filter(x => !archive_logs.contains(x._2))
+    // filter on date if provided
+    if (params.from != null && params.to != null)
+      bucketKeysList = bucketKeysList.filter(x => {
+        val date = Helper.getDateFromFilename(x._2)
+        date.before(params.to) && date.after(params.from)
+      })
+    // keep two archive for test mode
+    bucketKeysList = if (params.test) bucketKeysList.slice(0, 4) else bucketKeysList
+
+    if (bucketKeysList.nonEmpty) {
+      logger.info(f"Found ${bucketKeysList.size} files to parse after removing already parsed ones from the logs")
+      // handle number of partitions
+      val numPartitions = params.numPartitions.getOrElse(bucketKeysList.size / 3)
+      // rdd of file path
+      val zipBucketKeyRDD: RDD[(String, String)] = sc.parallelize(bucketKeysList, numPartitions)
+      // rdd of parsed patents
+      val patentParsedRDD = zipBucketKeyRDD.mapPartitions(part => parsePartitionsS3(part))
+        .filter {
+          case Some(p) => true;
+          case None => false;
+        }
+        .map(_.get)
+      // just for log
+      val zipPathRDD = zipBucketKeyRDD.map(x => f"s3://${x._1}/${x._2}")
+      // return patents and log rdd
+      (patentParsedRDD, zipPathRDD)
+    }
+    else {
+      logger.info("Found no new file to parse")
+      sys.exit(1)
+    }
+  }
+
+  def runLocal(sc: SparkContext, params: Params): (RDD[PatentDocument], RDD[String]) = {
+    var zipFilesPath: List[String] = Helper.getRecursiveListOfFilesInFolder(params.folderPath)
+      .filter(_.endsWith("zip"))
+    // filter on date if from, to are provided
+    if (params.from != null && params.to != null)
+      zipFilesPath = zipFilesPath.filter(x => {
+        val date: Date = Helper.getDateFromFilename(x)
+        date.before(params.to) && date.after(params.from)
+      })
+    logger.info(f"Found ${zipFilesPath.size} archives to process.")
+
+    val numPartitions: Int = params.numPartitions.getOrElse(zipFilesPath.size / 3)
+    // rdd of file path
+    val zipPathRDD: RDD[String] = sc.parallelize(zipFilesPath, numPartitions)
+    // rdd of parsed patent
+    val patentParsedRDD = zipPathRDD.mapPartitions(part => parsePartition(part))
+      .filter {
+        case Some(p) => true
+        case None => false;
+      }
+      .map(_.get)
+    (patentParsedRDD, zipPathRDD)
+  }
+
   def run(params: Params) = {
 
     val conf = new SparkConf()
@@ -80,80 +161,13 @@ object SparkApp {
     val hc = new SQLContext(sc)
     import hc.implicits._
 
-    var zipPathRDD: RDD[String] = sc.emptyRDD[String]
-    var patentParsedRDD: RDD[PatentDocument] = sc.emptyRDD[PatentDocument]
-
-    // Accumulator for errors
-    val acc: Accumulable[mutable.MutableList[String], String] =
-      sc.accumulableCollection(initialValue = mutable.MutableList())
-
-    if (usptoparser.Helper.isS3(params.folderPath)) {
-      logger.info("Detecting a s3 input folder.")
-      // for aws manipulation replace s3a by s3
-      val folderPath = params.folderPath.replaceAll("s3a://", "s3://")
-
-      // get list of file to process from the s3folder and make it an RDD
-      val s3: AmazonS3Client = new AmazonS3Client()
-      val region_name = sys.env.getOrElse("AWS_DEFAULT_REGION", "EU_WEST_1")
-      val region = Region.getRegion(Regions.valueOf(region_name))
-      s3.setRegion(region)
-
-      // look for logs not to parse already parsed archive
-      val archive_logs: Array[String] = Try({
-        sc.textFile(params.outputPath + "/log*/*")
-          .map(Helper.splitBucketKey).map(_._2).collect()
-      }).getOrElse(Array.empty[String])
-      logger.info(f"Found logs for ${archive_logs.size} parsed files")
-
-      // get list of s3 keys, and filter them
-      var bucketKeysList: List[(String, String)] = Helper.listS3FolderKeys(s3, folderPath)
-        .filter(x => x._2.endsWith("zip"))
-        .filter(x => !archive_logs.contains(x._2))
-      bucketKeysList = if (params.test) bucketKeysList.slice(0, 4) else bucketKeysList
-      // shutdown s3 client
-      s3.shutdown()
-
-      if (bucketKeysList.nonEmpty) {
-        logger.info(f"Found ${bucketKeysList.size} files to parse after removing already parsed ones from the logs")
-        // handle number of partitions
-        val numPartitions = params.numPartitions.getOrElse(bucketKeysList.size / 3)
-
-        val zipBucketKeyRDD: RDD[(String, String)] = sc.parallelize(bucketKeysList, numPartitions)
-
-        patentParsedRDD = zipBucketKeyRDD
-          .mapPartitions(part => parsePartitionsS3(part))
-          .filter {
-            case Some(p) => true;
-            case None => false;
-          }
-          .map(_.get)
-        // just for log
-        zipPathRDD = zipBucketKeyRDD.map(x => f"s3://${x._1}/${x._2}")
-      }
-      else {
-        logger.info("Found no new file to parse")
-        sys.exit(1)
-      }
-    }
-    else {
-      // val folderPath = "s3://asgard-data/test/patent/patzip/"
-      logger.info("Detecting an local input folder.")
-      val zipFilesPath: List[String] = Helper.getRecursiveListOfFilesInFolder(params.folderPath)
-        .filter(_.endsWith("zip"))
-      logger.info(f"Found ${zipFilesPath.size} archives to process.")
-
-      val numPartitions: Int = params.numPartitions.getOrElse(zipFilesPath.size / 3)
-
-      val rdd = sc.parallelize(zipFilesPath, numPartitions)
-        .mapPartitions(part => parsePartition(part))
-
-      patentParsedRDD = sc.parallelize(zipFilesPath, numPartitions)
-        .mapPartitions(part => parsePartition(part))
-        .filter {
-          case Some(p) => true
-          case None => false;
-        }
-        .map(_.get)
+    val (patentParsedRDD, zipPathRDD) = Helper.isS3(params.folderPath) match {
+      case true =>
+        logger.info("Detecting a s3 input folder.")
+        runS3(sc, params)
+      case false =>
+        logger.info("Detecting an local input folder.")
+        runLocal(sc, params)
     }
 
     // Save it in parquet format (need to go through dataframe)
@@ -177,7 +191,7 @@ object SparkApp {
       head("Spark Application that parse archive of uspto patent in a folder and save it to a parquet file")
 
       opt[String]("folderPath").required()
-        .text("path to folder containing pdf files to process")
+        .text("path to folder containing patent archives to process")
         .action((x, c) => c.copy(folderPath = x))
 
       opt[String]("outputPath").required()
@@ -189,8 +203,16 @@ object SparkApp {
         .action((x, c) => c.copy(numPartitions = Some(x)))
 
       opt[Unit]("test")
-        .text("Flag to test the software, process only 2 pdf archive")
+        .text("Flag to test the software, process only 2 patent archive")
         .action((_, c) => c.copy(test = true))
+
+      opt[String]("from")
+        .text("Starting date, in string format, will be infered. For instance 20010101")
+        .action((x, c) => c.copy(from = Helper.strToDate(x)))
+
+      opt[String]("to")
+        .text("Ending date, in string format: yyyyMMdd or yyMMdd")
+        .action((x, c) => c.copy(to = Helper.strToDate(x)))
 
     }
     // parser.parse returns Option[C]

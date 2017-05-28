@@ -2,20 +2,18 @@
 
 Spark application to parse patents from the USPTO. It mainly consists of a wrapper of the USPTO parser [USPTO/PatentPublicData](https://github.com/USPTO/PatentPublicData/), so thanks to them for the dirty work :)
 
-## build
+## Build
 
-```
-docker build -t uspto-parser .
-```
+`docker build -t uspto-parser .`
 
-# Usage
+## Usage
 
 show usage:
 
 `docker run --rm uspto-parser spark-submit target/scala-2.10/uspto-parser-assembly-0.0.1.jar`
 
 
-# Data Schema
+## Data Schema
 ```
 root
  |-- type: string (nullable = true)
