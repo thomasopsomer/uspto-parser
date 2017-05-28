@@ -10,10 +10,10 @@ import usptoparser.UsptoParserWrapper
 object UsptoParserWrapperTest {
   def main() = {
     /*
-    val path = "/Users/thomasopsomer/data/uspto/ipg050104.zip"
+    val path = "/Users/thomasopsomer/data/uspto2/pg041228.zip"
     val inputFile = new File(path)
 
-    val r = UsptoParserWrapper.parseZipFile(inputFile)
+    val r = UsptoParserWrapper.parseZipFileIt(inputFile)
 
     val patentDocFormat: PatentDocFormat = UsptoParserWrapper.getPatentDocFormat(inputFile)
 
@@ -25,6 +25,8 @@ object UsptoParserWrapperTest {
     val patentReader = new PatentReader(patentDocFormat)
     // parse patent
     val patent: Patent = patentReader.read(xmlStrReader)
+
+    UsptoParserWrapper.toDoc(patent)
 
     val relatedIds = patent.getRelationIds.asScala.map(x => x.getId).toList
     val otherIds = patent.getOtherIds.asScala.map(x => x.getId).toList

@@ -1,11 +1,13 @@
 FROM asgard/spark:latest
 
-# install sbt
+# Install sbt
+ENV SBT_VERSION 0.13.8
 RUN \
-  echo "deb https://dl.bintray.com/sbt/debian /" | tee -a /etc/apt/sources.list.d/sbt.list && \
-  apt-key adv --keyserver hkp://keyserver.ubuntu.com:80 --recv 2EE0EA64E40A89B84B2DF73499E82A75642AC823 && \
-  apt-get -y update && \
-  apt-get install -y sbt && \
+  curl -L -o sbt-$SBT_VERSION.deb http://dl.bintray.com/sbt/debian/sbt-$SBT_VERSION.deb && \
+  dpkg -i sbt-$SBT_VERSION.deb && \
+  rm sbt-$SBT_VERSION.deb && \
+  apt-get update && \
+  apt-get install sbt && \
   sbt sbtVersion
 
 # add code and compile it
@@ -16,7 +18,7 @@ RUN sbt assembly
 RUN mkdir /tmp/spark-events
 
 # spark-submit target/scala-2.10/uspto-parser-assembly-0.0.1.jar ...
-CMD [/sbin/init_script]
+CMD ["/sbin/my_init"]
 
 # clean docker
 RUN apt-get autoremove -y \

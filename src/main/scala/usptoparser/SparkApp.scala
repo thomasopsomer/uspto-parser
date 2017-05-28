@@ -5,7 +5,8 @@ package usptoparser
   */
 
 
-import java.io.File
+import java.io.{File, StringReader}
+
 import org.apache.spark.{Accumulable, SparkConf, SparkContext}
 import org.apache.spark.sql.{SQLContext, SaveMode}
 import com.amazonaws.services.s3.AmazonS3Client
@@ -15,6 +16,7 @@ import org.apache.spark.rdd.RDD
 import scala.collection.mutable
 import scala.util.Try
 import scopt.OptionParser
+import org.apache.log4j.LogManager
 
 
 object SparkApp {
@@ -26,57 +28,42 @@ object SparkApp {
                      test: Boolean = false
                    )
 
+  @transient lazy val logger = LogManager.getLogger("SparkUsptoParser")
+
   def parsePartitionsS3(partition: Iterator[(String, String)],
-                        tmpZipFolder: String = "/tmp/uspto-zip/"): Iterator[(String, Option[PatentDocument])] = {
-    // init s3 transfert manager
-    val s3client = new AmazonS3Client()
-
-    // create tar and pdf folder
+                        tmpZipFolder: String = "/tmp/uspto-zip/"): Iterator[Option[PatentDocument]] = {
     val zipDir = new File(tmpZipFolder)
-    if (!zipDir.exists) zipDir.mkdirs
-
-    val myIterator: Iterator[(String, Option[PatentDocument])] = partition.flatMap(x => {
-      //Get file form S3
-      val bucket: String = x._1
-      val key: String = x._2
-      val fname: String = tmpZipFolder + key.split("/").last
-      val resFile: File = new File(fname)
-      s3client.getObject(new GetObjectRequest(bucket, key), resFile)
-      // init parser wrapper
-      val usptoWrapper = new UsptoParserWrapper(resFile)
-      // parse data
-      try {
-        val patentsIt = usptoWrapper.parseZipFileIt()
-        patentsIt.map(x => (fname, x))
-      }
-      finally {
-        resFile.delete()
-      }
-    })
-    // return iterator for mapPartition
-    myIterator
+    if (!zipDir.exists) {
+      logger.debug(f"Creating temporary folder at ${zipDir.getAbsolutePath}")
+      zipDir.mkdirs
+    }
+    val s3client: AmazonS3Client = new AmazonS3Client()
+    try {
+      partition.flatMap(x => {
+        // DL file from S3
+        val (bucket, key) = x
+        val path: String = tmpZipFolder + key.split("/").last
+        val file = new File(path)
+        logger.debug(f"Downloading file ${file.getName} from s3://$bucket/$key")
+        s3client.getObject(new GetObjectRequest(bucket, key), file)
+        logger.info(f"Done downloading file ${file.getName} to ${file.getAbsolutePath}")
+        // parse it
+        val patentsIt: Iterator[Option[PatentDocument]] = UsptoParserWrapper.parseZipFileIt(file, delete=true)
+        patentsIt
+      })
+    }
+    finally {
+      // remove folder if empty
+      zipDir.delete
+    }
   }
 
-  def parsePartitionsLocal(partition: Iterator[String],
-                           tmpZipFolder: String = "/tmp/uspto-zip/",
-                           delete: Boolean = false): Iterator[(String, Option[PatentDocument])] = {
-
-    val myIterator: Iterator[(String, Option[PatentDocument])] = partition.flatMap(x => {
+  def parsePartition(partition: Iterator[String]): Iterator[Option[PatentDocument]] = {
+    partition.flatMap( x => {
       val file = new File(x)
-      // init parser wrapper
-      val usptoWrapper = new UsptoParserWrapper(file)
-
-      try {
-        // val patentsIt = usptoWrapper.parseZipFile()
-        val patentsIt = usptoWrapper.parseZipFileIt()
-        patentsIt.map(x => (file.getName, x))
-      }
-      finally {
-        if (delete) file.delete()
-      }
+      val patentsIt = UsptoParserWrapper.parseZipFileIt(file, delete=false)
+      patentsIt
     })
-    // return iterator for mapPartition
-    myIterator
   }
 
   def run(params: Params) = {
@@ -86,7 +73,7 @@ object SparkApp {
       .set("spark.driver.allowMultipleContexts", "true")
 
     val sc = SparkContext.getOrCreate(conf)
-    sc.setLogLevel("ERROR")
+    // sc.setLogLevel("INFO")
     sc.hadoopConfiguration.set("fs.s3a.connection.timeout", "500000")
 
     // sqlContext and implicits for dataframe
@@ -101,6 +88,7 @@ object SparkApp {
       sc.accumulableCollection(initialValue = mutable.MutableList())
 
     if (usptoparser.Helper.isS3(params.folderPath)) {
+      logger.info("Detecting a s3 input folder.")
       // for aws manipulation replace s3a by s3
       val folderPath = params.folderPath.replaceAll("s3a://", "s3://")
 
@@ -115,15 +103,18 @@ object SparkApp {
         sc.textFile(params.outputPath + "/log*/*")
           .map(Helper.splitBucketKey).map(_._2).collect()
       }).getOrElse(Array.empty[String])
+      logger.info(f"Found logs for ${archive_logs.size} parsed files")
 
       // get list of s3 keys, and filter them
       var bucketKeysList: List[(String, String)] = Helper.listS3FolderKeys(s3, folderPath)
         .filter(x => x._2.endsWith("zip"))
         .filter(x => !archive_logs.contains(x._2))
       bucketKeysList = if (params.test) bucketKeysList.slice(0, 4) else bucketKeysList
+      // shutdown s3 client
+      s3.shutdown()
 
       if (bucketKeysList.nonEmpty) {
-        println(f"Found ${bucketKeysList.size} archives to process.")
+        logger.info(f"Found ${bucketKeysList.size} files to parse after removing already parsed ones from the logs")
         // handle number of partitions
         val numPartitions = params.numPartitions.getOrElse(bucketKeysList.size / 3)
 
@@ -131,49 +122,59 @@ object SparkApp {
 
         patentParsedRDD = zipBucketKeyRDD
           .mapPartitions(part => parsePartitionsS3(part))
-          .filter( _._2 match {
-            case Some(p) => true
+          .filter {
+            case Some(p) => true;
             case None => false;
-          })
-          .map(_._2.get)
-
+          }
+          .map(_.get)
         // just for log
         zipPathRDD = zipBucketKeyRDD.map(x => f"s3://${x._1}/${x._2}")
       }
       else {
-        println("No new archive to parse")
+        logger.info("Found no new file to parse")
         sys.exit(1)
       }
     }
     else {
+      // val folderPath = "s3://asgard-data/test/patent/patzip/"
+      logger.info("Detecting an local input folder.")
       val zipFilesPath: List[String] = Helper.getRecursiveListOfFilesInFolder(params.folderPath)
         .filter(_.endsWith("zip"))
-      println(f"Found ${zipFilesPath.size} archives to process.")
+      logger.info(f"Found ${zipFilesPath.size} archives to process.")
 
       val numPartitions: Int = params.numPartitions.getOrElse(zipFilesPath.size / 3)
+
+      val rdd = sc.parallelize(zipFilesPath, numPartitions)
+        .mapPartitions(part => parsePartition(part))
+
       patentParsedRDD = sc.parallelize(zipFilesPath, numPartitions)
-        .mapPartitions(part => parsePartitionsLocal(part))
-        .filter( _._2 match {
+        .mapPartitions(part => parsePartition(part))
+        .filter {
           case Some(p) => true
           case None => false;
-        })
-        .map(_._2.get)
+        }
+        .map(_.get)
     }
+
     // Save it in parquet format (need to go through dataframe)
+    logger.info(f"Starting to parse files, appending parquet ${params.outputPath}")
     patentParsedRDD.toDF()
       .write
       .mode(SaveMode.Append)
       .parquet(params.outputPath)
+    logger.info(f"Done parsing and appending parquet")
 
     // save list of processed archive
-    zipPathRDD.coalesce(1).saveAsTextFile(params.outputPath + "/log_%s" format java.time.LocalDate.now.toString)
+    val logPath = params.outputPath + "/log_%s" format java.time.LocalDate.now.toString
+    zipPathRDD.coalesce(1).saveAsTextFile(logPath)
+    logger.info(f"Log file save to $logPath")
   }
 
   def main(args: Array[String]): Unit = {
 
     // Argument parser
     val parser = new OptionParser[Params]("SparkPdfParser") {
-      head("Spark Application that parse pdf in a folder and save it to a parquet file")
+      head("Spark Application that parse archive of uspto patent in a folder and save it to a parquet file")
 
       opt[String]("folderPath").required()
         .text("path to folder containing pdf files to process")

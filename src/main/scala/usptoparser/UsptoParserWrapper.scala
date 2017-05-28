@@ -5,11 +5,11 @@ package usptoparser
   */
 
 
-import java.io.{File, StringReader}
+import java.io.File
 
 import gov.uspto.common.filter.FileFilterChain
 import gov.uspto.patent.bulk.{DumpFileAps, DumpFileXml, DumpReader}
-import gov.uspto.patent.{DateTextType, PatentDocFormat, PatentDocFormatDetect, PatentReader}
+import gov.uspto.patent.{DateTextType, PatentDocFormat, PatentDocFormatDetect}
 import gov.uspto.patent.model._
 import gov.uspto.patent.model.classification._
 import gov.uspto.patent.model.entity.Address
@@ -17,124 +17,74 @@ import gov.uspto.patent.model.entity.NameOrg
 import gov.uspto.patent.model.entity.NamePerson
 import gov.uspto.patent.doc.simplehtml.FreetextConfig
 import org.apache.commons.io.filefilter.SuffixFileFilter
+import org.apache.log4j.LogManager
 
 import scala.collection.JavaConverters._
-import scala.collection.mutable
-
-
-class UsptoParserWrapper(inputFile: File) extends Serializable {
-
-  private val dumpReader = UsptoParserWrapper.getDumpReader(inputFile)
-  private val patentDocFormat= UsptoParserWrapper.getPatentDocFormat(inputFile)
-  private val patentReaderWrapper = new PatentReaderWrapper(patentDocFormat)
-
-  def parseZipFile(): mutable.ArrayBuffer[Option[PatentDocument]] = {
-    // container to place the parsed patent
-    val key = inputFile.getName
-    val container = mutable.ArrayBuffer.empty[Option[PatentDocument]]
-    // zip file reader
-    dumpReader.open()
-    // iterate over the big xml
-    try {
-      while (dumpReader.hasNext) {
-        try {
-          // get xml of patent
-          val xmlStr = dumpReader.next
-          if (xmlStr != null) {
-            val xmlStrReader = new StringReader(xmlStr)
-            val patent = patentReaderWrapper.read(xmlStrReader)
-            // transform to custom PatentDocument object (case class)
-            val doc = UsptoParserWrapper.toDoc(patent)
-            container += Some(doc)
-          }
-        }
-        catch {
-          case e: Exception => {e.printStackTrace(); println(key);}
-        }
-      }
-    }
-    finally {
-      dumpReader.close()
-      println(f"finish file $key")
-    }
-    container
-  }
-
-  def parseZipFileIt(): Iterator[Option[PatentDocument]] = {
-
-    val containerIt = Iterator.empty
-
-    val key = inputFile.getName
-    // zip file reader
-    dumpReader.open()
-
-    try {
-      while (dumpReader.hasNext) {
-        try {
-          // get xml of patent
-          val xmlStr = dumpReader.next
-          if (xmlStr != null) {
-            val xmlStrReader = new StringReader(xmlStr)
-            val patent = patentReaderWrapper.read(xmlStrReader)
-            // transform to custom PatentDocument object (case class)
-            val doc = UsptoParserWrapper.toDoc(patent)
-            // container += Some(doc)
-            containerIt ++ Iterator(Some(doc))
-          }
-        }
-        catch {
-          case e: Exception => {e.printStackTrace();}
-        }
-      }
-    }
-    finally {
-      dumpReader.close()
-      println(f"finish file $key")
-    }
-    containerIt
-  }
-}
+import scala.collection.mutable.ArrayBuffer
 
 
 object UsptoParserWrapper {
 
-  def parseZipFile(inputFile: File): List[(String, Option[PatentDocument])] = {
-    // container to place the parsed patent
-    val key = inputFile.getName
-    val container = mutable.ArrayBuffer.empty[(String, Option[PatentDocument])]
-    // patent format
-    val patentDocFormat = getPatentDocFormat(inputFile)
-    // zip file reader
-    val dumpReader = getDumpReader(inputFile, patentDocFormat)
+  @transient lazy val logger = LogManager.getLogger("SparkUsptoParser.UsptoParserWrapper")
+
+  def parseZipFileIt(file: File, delete: Boolean = false): Iterator[Option[PatentDocument]] = {
+    //
+    logger.debug(f"Processing file ${file.getName}")
+    new UsptoParserWrapper(file, delete)
+  }
+
+  def parseZipFile(file: File, delete: Boolean = false): ArrayBuffer[Option[PatentDocument]] = {
+
+    logger.debug(f"Processing file ${file.getName}")
+    val patentFormat = getPatentDocFormat(file)
+    logger.debug(f"Detected file format ${patentFormat.toString}")
+    val dumpReader = getDumpReader(file, patentFormat)
+    logger.debug("Dump reader created")
+    // val patentReader = new PatentReader(patentFormat)
+    val patentReader = new PatentReaderWrapper(patentFormat)
+    // empty container (array buffer)
+    var container = ArrayBuffer.empty[Option[PatentDocument]]
     dumpReader.open()
-    // iterate over the big xml
+
     try {
       while (dumpReader.hasNext) {
         try {
           // get xml of patent
           val xmlStr = dumpReader.next
-          val xmlStrReader = new StringReader(xmlStr)
-          val patentReader = new PatentReader(patentDocFormat)
-          // parse patent
-          val patent: Patent = patentReader.read(xmlStrReader)
-          // transform to custom PatentDocument object (case class)
-          val doc = UsptoParserWrapper.toDoc(patent)
-          container += Tuple2(key, Some(doc))
+          if (xmlStr != null) {
+            // val xmlStrReader = new StringReader(xmlStr)
+            // val patent = patentReader.read(xmlStrReader)
+            val patent: Patent = patentReader.read(xmlStr)
+            // val patent = patentReaderWrapper.read(xmlStr)
+            // transform to custom PatentDocument object (case class)
+            val doc = toDoc(patent)
+            // logger.debug(f"Patent number: ${doc.patentId}")
+            container += Some(doc)
+          }
+          else {
+            container += None
+          }
         }
         catch {
-          case e: Exception => {e.printStackTrace(); println(key);}
+          case e: Exception => {e.printStackTrace(); println(file.getName);}
         }
       }
+      logger.info(f"Done processing file ${file.getName}")
     }
     finally {
-      // dumpReader.close()
-      println(f"finish file $key")
+      dumpReader.close()
+      if (delete) file.delete()
     }
-    container.toList
+    container
   }
 
   def getDumpReader(inputFile: File): DumpReader = {
     val patentDocFormat: PatentDocFormat = getPatentDocFormat(inputFile)
+    getDumpReader(inputFile, patentDocFormat)
+  }
+
+  def getDumpReader(inputFile: File, patentDocFormat: PatentDocFormat): DumpReader = {
+    // getDumpReader(inputFile: File)
     val dumpReader: DumpReader = patentDocFormat match {
       case PatentDocFormat.Greenbook => new DumpFileAps(inputFile)
       case _ => {
@@ -147,10 +97,6 @@ object UsptoParserWrapper {
       }
     }
     dumpReader
-  }
-
-  def getDumpReader(inputFile: File, patentDocFormat: PatentDocFormat): DumpReader = {
-    getDumpReader(inputFile: File)
   }
 
   def getPatentDocFormat(inputFile: File): PatentDocFormat = {
@@ -360,5 +306,65 @@ object UsptoParserWrapper {
 
   def valueOrEmpty(value: AnyRef): String = {
     if (value != null) value.toString else null
+  }
+}
+
+
+class UsptoParserWrapper(file: File, delete: Boolean = false) extends Iterator[Option[PatentDocument]] {
+
+  import UsptoParserWrapper.logger
+
+  private val patentDocFormat = {
+    val format = UsptoParserWrapper.getPatentDocFormat(file)
+    logger.debug(f"Detected file format ${format.toString}")
+    format
+  }
+
+  private val dumpReader = {
+    logger.debug("Creating dump reader")
+    UsptoParserWrapper.getDumpReader(file, patentDocFormat)
+  }
+
+  private val patentReader = new PatentReaderWrapper(patentDocFormat)
+
+  def hasNext = {
+    val hasNext = dumpReader.hasNext
+    if (!hasNext) {
+      // close the file
+      close()
+      // remove the file if asked
+      if (delete) file.delete()
+    }
+    hasNext
+  }
+
+  var isOpen = false
+
+  def open() = {
+    dumpReader.open()
+    isOpen = true
+  }
+
+  def close() = {
+    dumpReader.close()
+    isOpen = false
+  }
+
+  def next() = {
+    // check if reader is open
+    if (!isOpen) open()
+
+    val xmlStr = dumpReader.next
+
+    if (xmlStr != null) {
+      val patent: Patent = patentReader.read(xmlStr)
+      // transform to custom PatentDocument object (case class)
+      val doc = UsptoParserWrapper.toDoc(patent)
+      // logger.debug(f"Patent number: ${doc.patentId}")
+      Some(doc)
+    }
+    else {
+      None
+    }
   }
 }
