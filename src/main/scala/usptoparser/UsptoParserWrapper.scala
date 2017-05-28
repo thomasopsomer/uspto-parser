@@ -15,7 +15,7 @@ import gov.uspto.patent.model.classification._
 import gov.uspto.patent.model.entity.Address
 import gov.uspto.patent.model.entity.NameOrg
 import gov.uspto.patent.model.entity.NamePerson
-import gov.uspto.patent.doc.simplehtml.FreetextConfig
+import gov.uspto.patent.doc.simplehtml.{FreetextConfig, HtmlFieldType}
 import org.apache.commons.io.filefilter.SuffixFileFilter
 import org.apache.log4j.LogManager
 
@@ -104,11 +104,18 @@ object UsptoParserWrapper {
   }
 
   lazy val freeTextConfig: FreetextConfig = {
-    val badHtmlElem = List("fig", "tr", "table", "br", "dd", "dt")
+    // val badHtmlElem = List("fig", "tr", "table", "br", "dd", "dt")
     val config = new FreetextConfig()
-    for (elem <- badHtmlElem) {
-      config.remove(elem)
-    }
+    // remove tables, maths formula...
+    config.remove(HtmlFieldType.TABLE)
+    config.remove(HtmlFieldType.MATHML)
+    config.remove(HtmlFieldType.CROSSREF)
+    // replace citation, figure links ...
+    config.replace(HtmlFieldType.FIGREF, "Patent-Figure")
+    config.replace(HtmlFieldType.CLAIMREF, "Patent-Claim")
+    config.replace(HtmlFieldType.PATCITE, "Patent-Citation")
+    config.replace(HtmlFieldType.NPLCITE, "Patent-Citation")
+
     config
   }
 

@@ -2,15 +2,33 @@
 
 Spark application to parse patents from the USPTO. It mainly consists of a wrapper of the USPTO parser [USPTO/PatentPublicData](https://github.com/USPTO/PatentPublicData/), so thanks to them for the dirty work :)
 
+
 ## Build
 
-`docker build -t uspto-parser .`
+Using [sbt docker](https://github.com/marcuslonnberg/sbt-docker) to directly get a docker image with the jar:
+`sbt docker`
+
 
 ## Usage
 
 show usage:
 
-`docker run --rm uspto-parser spark-submit target/scala-2.10/uspto-parser-assembly-0.0.1.jar`
+`docker run --rm asgard/uspto-parser:latest spark-submit /home/uspto-parser/uspto-parser-assembly-0.0.1.jar`
+
+```
+  --folderPath <value>
+        path to folder containing patent archives to process
+  --outputPath <value>
+        path to output parquet file
+  --numPartitions <value>
+        Number of partitions of rdd to process
+  --test
+        Flag to test the software, process only 2 patent archive
+  --from <value>
+        Starting date, in string format, will be infered. For instance 20010101
+  --to <value>
+        Ending date, in string format: yyyyMMdd or yyMMdd
+```
 
 
 ## Data Schema
