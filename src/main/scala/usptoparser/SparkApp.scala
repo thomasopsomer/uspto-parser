@@ -150,7 +150,7 @@ object SparkApp {
   def run(params: Params) = {
 
     val conf = new SparkConf()
-      .setAppName("GrobidSpark")
+      .setAppName("SparkUsptoParser")
       .set("spark.driver.allowMultipleContexts", "true")
 
     val sc = SparkContext.getOrCreate(conf)
