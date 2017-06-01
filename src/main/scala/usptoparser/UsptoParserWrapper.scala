@@ -10,7 +10,7 @@ import java.io.File
 import gov.uspto.common.filter.FileFilterChain
 import gov.uspto.patent.bulk.{DumpFileAps, DumpFileXml, DumpReader}
 import gov.uspto.patent.{DateTextType, PatentDocFormat, PatentDocFormatDetect}
-import gov.uspto.patent.model._
+import gov.uspto.patent.model.{CitationType, DescSection, PatCitation, Patent}
 import gov.uspto.patent.model.classification._
 import gov.uspto.patent.model.entity.Address
 import gov.uspto.patent.model.entity.NameOrg
@@ -275,11 +275,12 @@ object UsptoParserWrapper {
   }
 
   def mapDocumentId(docId: gov.uspto.patent.model.DocumentId): usptoparser.DocumentId = {
+    val date = if (docId.getDate != null) docId.getDate.getDateText(DateTextType.ISO) else null
     usptoparser.DocumentId(
       kind = docId.getKindCode,
       docNumber = docId.getDocNumber,
       country = valueOrEmpty(docId.getCountryCode),
-      date = docId.getDate.getDateText(DateTextType.ISO),
+      date = date,
       id = docId.getId
     )
   }
@@ -314,6 +315,7 @@ object UsptoParserWrapper {
   def valueOrEmpty(value: AnyRef): String = {
     if (value != null) value.toString else null
   }
+
 }
 
 

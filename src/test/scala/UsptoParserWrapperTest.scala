@@ -11,6 +11,7 @@ object UsptoParserWrapperTest {
   def main() = {
     /*
     val path = "/Users/thomasopsomer/data/uspto2/pg041228.zip"
+    val path = "/Users/thomasopsomer/data/ipa130711.zip"
     val inputFile = new File(path)
 
     val r = UsptoParserWrapper.parseZipFileIt(inputFile)
@@ -23,8 +24,40 @@ object UsptoParserWrapperTest {
     val xmlStr = dumpReader.next
     val xmlStrReader = new StringReader(xmlStr)
     val patentReader = new PatentReader(patentDocFormat)
+    val dom = PatentReader.getJDOM(xmlStrReader)
     // parse patent
     val patent: Patent = patentReader.read(xmlStrReader)
+
+    import gov.uspto.patent.doc.xml.ApplicationParser
+    import gov.uspto.patent.doc.xml.fragments.PriorityClaims
+    import gov.uspto.patent.doc.xml.items.DocumentIdNode
+    import gov.uspto.patent.model.DocumentId
+
+    val parser = new ApplicationParser()
+    val dom: Document = PatentReader.getJDOM(xmlStrReader)
+    parser.parse(dom)
+
+
+
+    val pp = new PriorityClaims(dom)
+    pp.read()
+
+    import org.dom4j.Document
+    import org.dom4j.Node
+    import gov.uspto.patent.model.CountryCode
+
+    val pnodes: List[Node] = dom.selectNodes("//priority-claims/priority-claim").asScala.toList.asInstanceOf[List[Node]]
+    new DocumentIdNode(pnodes(0))
+
+    val docNumN = pnodes(0).selectSingleNode("doc-number")
+    val countryN = pnodes(0).selectSingleNode("country")
+    val kindN = pnodes(0).selectSingleNode("kind")
+
+    val kindCode = if (kindN != null) kindN.getText() else null
+    val countryCode = CountryCode.fromString(countryN.getText)
+    val documentId = new DocumentId(countryCode, docNumN.getText(), kindCode)
+
+
 
     UsptoParserWrapper.toDoc(patent)
 

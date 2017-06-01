@@ -38,10 +38,10 @@ case class PatentDocument(
 
 
 case class DocumentId(
-                     docNumber: String,
-                     kind: String,
-                     date: String,
-                     country: String,
+                     docNumber: String = null,
+                     kind: String = null,
+                     date: String = null,
+                     country: String = null,
                      id: String = null
                      )
 
